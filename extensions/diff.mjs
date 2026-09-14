@@ -25,6 +25,11 @@ import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 
 const MAX_TOOL_BYTES = 100 * 1024;
+/** e's own cap on a show block; past it the review is clipped here so the
+ *  title can say so. */
+const MAX_SHOW_BYTES = 64 * 1024;
+/** An untracked file larger than this is listed, not shown. */
+const MAX_NEW_FILE_BYTES = 2 * 1024 * 1024;
 
 let turnSummary = true;
 /** What the tree looked like after the last turn (or at launch). */
@@ -188,15 +193,45 @@ function onCommand(args) {
   const argv = rest.length ? rest : ["HEAD"];
   const run = git(["diff", "--no-color", ...argv]);
   if (!run.ok) return { notice: `diff: ${run.out || "git diff failed"}` };
-  const title = `diff ${rest.join(" ")}`.trim();
-  if (!run.out) {
-    const extra = untracked();
-    const body = extra.length ? `no tracked changes\nuntracked: ${extra.join(", ")}` : "clean working tree";
-    return { show: { title, body, format: "text" } };
+  // The plain review is the whole working tree against HEAD: staged and
+  // unstaged changes, then every non-ignored untracked file as an addition.
+  let body = run.out;
+  if (!rest.length) {
+    for (const path of untracked()) {
+      const patch = newFilePatch(path);
+      if (patch) body += (body ? "\n" : "") + patch;
+    }
+  }
+  if (!body) {
+    return { show: { title: "no changes", body: "clean working tree", format: "text" } };
+  }
+  // The title carries the file count and line totals; a review past e's
+  // show limit is clipped on a patch boundary and says so.
+  const files = (body.match(/^diff --git /gm) || []).length;
+  let title = `${files} file${files === 1 ? "" : "s"} changed ${counts(body)}`;
+  if (rest.length) title += ` (${rest.join(" ")})`;
+  if (body.length > MAX_SHOW_BYTES) {
+    const cut = body.lastIndexOf("\ndiff --git ", MAX_SHOW_BYTES);
+    body = body.slice(0, cut > 0 ? cut : MAX_SHOW_BYTES);
+    title += " — clipped; /diff <path> reviews one file";
   }
   // A real diff block: e converts the unified diff to its row grammar and
   // paints the markers; nothing here is a colour.
-  return { show: { title, body: run.out, format: "diff" } };
+  return { show: { title, body, format: "diff" } };
+}
+
+/** An untracked file as a unified patch against nothing. Binary files
+ *  become git's one-line note; a file too large to review is skipped. */
+function newFilePatch(path) {
+  const run = spawnSync("git", ["diff", "--no-color", "--no-index", "--", "/dev/null", path], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  // --no-index exits 1 when the files differ, which is the whole point.
+  if (run.error || (run.status !== 0 && run.status !== 1)) return null;
+  const out = (run.stdout || "").trimEnd();
+  if (!out || out.length > MAX_NEW_FILE_BYTES) return null;
+  return out;
 }
 
 function onTool(args) {
