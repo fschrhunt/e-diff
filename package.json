@@ -1,0 +1,16 @@
+{
+  "name": "e-diff",
+  "version": "2.0.0",
+  "description": "See what changed: /diff as a real diff block, a change line after every turn, and a diff tool for e",
+  "keywords": ["e-package", "extensions", "prompts", "e", "diff", "git"],
+  "license": "MIT",
+  "author": "Fischer Hunt",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fschrhunt/e-diff.git"
+  },
+  "homepage": "https://github.com/fschrhunt/e-diff#readme",
+  "bugs": "https://github.com/fschrhunt/e-diff/issues",
+  "files": ["extensions", "prompts", "README.md"],
+  "engines": { "node": ">=18" }
+}

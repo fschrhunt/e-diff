@@ -3,7 +3,8 @@
 See what changed. A package for [e](https://github.com/intuitums/e).
 
 ```sh
-e install git:github.com/fschrhunt/e-diff@v2
+e install npm:e-diff                            # from npm
+e install git:github.com/fschrhunt/e-diff@v2    # or straight from git
 ```
 
 Then restart e or run `/reload`.
