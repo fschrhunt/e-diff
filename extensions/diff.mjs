@@ -2,9 +2,12 @@
 /**
  * diff — see what changed, for you and for the model.
  *
- *   /diff              every change in the working tree vs HEAD, as a real
- *                      diff block: line numbers, coloured markers, ⋯ between
- *                      hunks — plus untracked files
+ *   /diff              a live review pane beside the conversation: the
+ *                      changed files with their counts, and the selected
+ *                      file's patch — line numbers, coloured markers, ⋯
+ *                      between hunks. Refreshes after every tool; /diff
+ *                      again closes it. Where it sits is ~/.e/layout.json
+ *   /diff show         the whole review as one block in the transcript
  *   /diff --stat       the per-file summary instead
  *   /diff <args…>      anything `git diff` accepts — a path, --staged,
  *                      main..., HEAD~3
@@ -131,16 +134,80 @@ function turnLine(before, after) {
   return `${count} +${added} −${deleted}: ${touched.join(", ")}`;
 }
 
+// ---------------------------------------------------------------- the pane
+
+/** The review pane's state: open, and which file its patch shows. */
+let paneOpen = false;
+let paneSelected = null;
+
+/** The whole working tree against HEAD as the pane's sections: every
+ *  changed and untracked file in a list, the selected one's patch below. */
+function paneContent() {
+  const files = [];
+  const numstat = git(["diff", "--numstat", "HEAD"]);
+  if (numstat.ok) {
+    for (const line of numstat.out.split("\n").filter(Boolean)) {
+      const [added, deleted, ...rest] = line.split("\t");
+      files.push({ path: rest.join("\t"), added: Number(added) || 0, deleted: Number(deleted) || 0 });
+    }
+  }
+  for (const path of untracked()) files.push({ path, added: null, deleted: null });
+  if (!files.some((f) => f.path === paneSelected)) paneSelected = files.length ? files[0].path : null;
+  const totals = files.reduce(
+    (t, f) => [t[0] + (f.added || 0), t[1] + (f.deleted || 0)],
+    [0, 0]
+  );
+  const summary = files.length
+    ? `${files.length} file${files.length === 1 ? "" : "s"} changed +${totals[0]} -${totals[1]}`
+    : "";
+  const items = files.map((f) => ({
+    id: f.path,
+    label: f.path,
+    detail: f.added === null ? "new" : `+${f.added} -${f.deleted}`,
+  }));
+  let patch = "";
+  if (paneSelected) {
+    const tracked = files.find((f) => f.path === paneSelected && f.added !== null);
+    patch = tracked
+      ? git(["diff", "--no-color", "HEAD", "--", paneSelected]).out
+      : newFilePatch(paneSelected) || "";
+  }
+  // The pane keeps one name; the counts head the file list, and the
+  // patch section is titled by its file so a selection attaches as
+  // `[main.rs 3 lines]`.
+  const sections = [];
+  if (items.length) sections.push({ kind: "list", id: "files", title: summary, items, selected: paneSelected });
+  if (patch) sections.push({ kind: "diff", id: "patch", title: paneSelected, body: patch });
+  if (!sections.length) sections.push({ kind: "text", id: "clean", body: "clean working tree" });
+  return { id: "diff", title: "Changes", side: "right", sections };
+}
+
+function refreshPane() {
+  if (!paneOpen) return;
+  write({ id: `pane-${Date.now()}`, method: "ui.pane", params: paneContent() });
+}
+
+function togglePane() {
+  if (paneOpen) {
+    paneOpen = false;
+    write({ id: "pane-close", method: "ui.pane", params: null });
+    return {};
+  }
+  paneOpen = true;
+  refreshPane();
+  return {};
+}
+
 // ---------------------------------------------------------------- protocol
 
 const manifest = {
   name: "diff",
-  version: "2.0",
-  description: "what changed: /diff, a per-turn summary, and a diff tool",
+  version: "3.0",
+  description: "what changed: a /diff pane, a per-turn summary, and a diff tool",
   commands: [
     {
       name: "diff",
-      description: "show changes: /diff (patch) · /diff --stat · /diff <path | --staged | ref…>",
+      description: "review changes: /diff (pane) · /diff show · /diff --stat · /diff <path | --staged | ref…>",
     },
   ],
   tools: [
@@ -171,7 +238,7 @@ const manifest = {
       label: { category: "diff", running: "Diffing", completed: "Diffed", target: "base" },
     },
   ],
-  events: ["turn_end"],
+  events: ["turn_end", "tool_end"],
 };
 
 function write(obj) {
@@ -185,8 +252,9 @@ function notify(message) {
 function onCommand(args) {
   if (!inRepo()) return { notice: "diff: not a git repository" };
   const words = safeArgs((args || "").trim().split(/\s+/).filter(Boolean));
+  if (!words.length) return togglePane();
   const wantsStat = words.includes("--stat");
-  const rest = words.filter((w) => w !== "--stat");
+  const rest = words.filter((w) => w !== "--stat" && w !== "show");
   if (wantsStat) {
     return { show: { title: `diff --stat ${rest.join(" ")}`.trim(), body: stat(rest), format: "text" } };
   }
@@ -261,7 +329,9 @@ function onTool(args) {
 }
 
 function onTurnEnd() {
-  if (!turnSummary || !inRepo()) return;
+  if (!inRepo()) return;
+  refreshPane();
+  if (!turnSummary) return;
   const after = snapshot();
   const line = turnLine(baseline, after);
   baseline = after;
@@ -277,6 +347,8 @@ rl.on("line", (raw) => {
     return;
   }
   const { id, method, params = {} } = msg;
+  // A reply to one of our own requests (the pane): nothing to do.
+  if (method === undefined) return;
   try {
     switch (method) {
       case "initialize": {
@@ -294,6 +366,19 @@ rl.on("line", (raw) => {
         break;
       case "event":
         if (params.name === "turn_end") onTurnEnd();
+        else if (params.name === "tool_end") refreshPane();
+        break;
+      case "pane.select":
+      case "pane.activate":
+        if (params.section === "files" && params.id !== paneSelected) {
+          paneSelected = params.id;
+          refreshPane();
+        }
+        break;
+      case "pane.closed":
+        paneOpen = false;
+        break;
+      case "pane.key":
         break;
       case "shutdown":
         process.exit(0);

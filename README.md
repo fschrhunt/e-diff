@@ -11,12 +11,20 @@ Then restart e or run `/reload`.
 
 ## What you get
 
-**`/diff`** — every change in the working tree against HEAD as a real
-diff block in the transcript: line numbers, coloured `+`/`-` markers, `⋯`
-between hunks, painted by e through your theme. `/diff --stat` shows the
-per-file summary and untracked files instead. Arguments pass through to
-`git diff`: `/diff src/main.rs`, `/diff --staged`, `/diff main...`,
-`/diff HEAD~3`.
+**`/diff`** — a live review pane beside the conversation: every changed
+and untracked file with its `+`/`-` counts, and the selected file's patch
+below — line numbers, coloured markers, `⋯` between hunks, painted by e
+through your theme. It refreshes after every tool the agent runs. `ctrl+t`
+moves between the conversation and the pane; in the pane, `↑`/`↓` pick a
+file, `Enter` moves to its patch, `Shift+↓` selects lines and `Enter`
+attaches them to your draft, `Esc` steps back and then closes. `/diff`
+again closes it. Which side it sits on and how wide it is are yours to set
+in `~/.e/layout.json` (`e docs layout`).
+
+**`/diff show`** — the whole review as one block in the transcript
+instead. `/diff --stat` shows the per-file summary and untracked files.
+Other arguments pass through to `git diff` as a block: `/diff
+src/main.rs`, `/diff --staged`, `/diff main...`, `/diff HEAD~3`.
 
 **A line after every turn** — when the agent's turn touched files, one
 notice names them with their added and removed line counts:
