@@ -2,16 +2,21 @@
 /**
  * diff — see what changed, for you and for the model.
  *
- *   /diff              stat of every change in the working tree vs HEAD,
- *                      plus untracked files
- *   /diff <args…>      the patch: anything `git diff` accepts — a path,
- *                      --staged, main..., HEAD~3
+ *   /diff              every change in the working tree vs HEAD, as a real
+ *                      diff block: line numbers, coloured markers, ⋯ between
+ *                      hunks — plus untracked files
+ *   /diff --stat       the per-file summary instead
+ *   /diff <args…>      anything `git diff` accepts — a path, --staged,
+ *                      main..., HEAD~3
  *   turn end           one line per turn naming the files the agent touched
  *                      and their +/- counts (silent when nothing changed)
- *   diff tool          the model reads the patch or the stat itself
+ *   diff tool          the model reads the patch or the stat itself; the row
+ *                      says `Diffing src/x.rs`, and ctrl+o shows the diff
+ *                      painted like an edit's
  *
  * Self-contained: speaks e's line protocol directly, needs only node and
- * git. Config in ~/.e/settings.json, under the extension's own name:
+ * git. Everything it shows is data; e paints it through the theme.
+ * Config in ~/.e/settings.json, under the extension's own name:
  *
  *   {"extensions":{"diff":{"turn_summary":false}}}   no per-turn line
  */
@@ -19,7 +24,6 @@
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline";
 
-const MAX_NOTICE_LINES = 200;
 const MAX_TOOL_BYTES = 100 * 1024;
 
 let turnSummary = true;
@@ -57,27 +61,35 @@ function snapshot() {
       files.set(rest.join("\t"), [Number(added) || 0, Number(deleted) || 0]);
     }
   }
-  const status = git(["status", "--porcelain", "--untracked-files=all"]);
-  if (status.ok) {
-    for (const line of status.out.split("\n")) {
-      if (line.startsWith("?? ")) files.set(line.slice(3), ["new", 0]);
-    }
-  }
+  for (const path of untracked()) files.set(path, ["new", 0]);
   return { head, files };
 }
 
-/** Lines of `git diff --stat HEAD`, then untracked files, or a clean note. */
-function overview() {
-  const stat = git(["diff", "--stat=100", "HEAD"]);
-  const lines = stat.ok && stat.out ? stat.out.split("\n") : [];
+function untracked() {
   const status = git(["status", "--porcelain", "--untracked-files=all"]);
-  const untracked = status.ok
+  return status.ok
     ? status.out.split("\n").filter((l) => l.startsWith("?? ")).map((l) => l.slice(3))
     : [];
-  if (untracked.length) {
-    lines.push(`untracked: ${untracked.join(", ")}`);
-  }
+}
+
+/** `git diff --stat` rows plus an untracked line, or a clean note. */
+function stat(args) {
+  const run = git(["diff", "--stat=100", ...args]);
+  const lines = run.ok && run.out ? run.out.split("\n") : [];
+  const extra = untracked();
+  if (extra.length) lines.push(`untracked: ${extra.join(", ")}`);
   return lines.length ? lines.join("\n") : "clean working tree";
+}
+
+/** `+N -M` for a patch, the summary a tool row wears. */
+function counts(patch) {
+  let added = 0;
+  let deleted = 0;
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("+") && !line.startsWith("+++")) added += 1;
+    else if (line.startsWith("-") && !line.startsWith("---")) deleted += 1;
+  }
+  return `+${added} -${deleted}`;
 }
 
 /** The change since the last snapshot as one summary line, or null. */
@@ -118,12 +130,12 @@ function turnLine(before, after) {
 
 const manifest = {
   name: "diff",
-  version: "1.0",
+  version: "2.0",
   description: "what changed: /diff, a per-turn summary, and a diff tool",
   commands: [
     {
       name: "diff",
-      description: "show changes: /diff (stat) or /diff <path | --staged | ref…>",
+      description: "show changes: /diff (patch) · /diff --stat · /diff <path | --staged | ref…>",
     },
   ],
   tools: [
@@ -148,8 +160,13 @@ const manifest = {
           stat: { type: "boolean", description: "Summary per file instead of the patch" },
         },
       },
+      // The transcript row: `Diffing src/x.rs` while it runs, `Diffed …`
+      // after, filed under "diff" in the batch tally. `target` names the
+      // argument the row shows; `base` reads better than a paths array.
+      label: { category: "diff", running: "Diffing", completed: "Diffed", target: "base" },
     },
   ],
+  events: ["turn_end"],
 };
 
 function write(obj) {
@@ -162,18 +179,24 @@ function notify(message) {
 
 function onCommand(args) {
   if (!inRepo()) return { notice: "diff: not a git repository" };
-  const words = (args || "").trim().split(/\s+/).filter(Boolean);
-  if (!words.length) return { notice: `diff: ${overview()}` };
-  const run = git(["diff", "--no-color", ...safeArgs(words)]);
-  if (!run.ok) return { notice: `diff: ${run.out || "git diff failed"}` };
-  if (!run.out) return { notice: `diff: no changes for ${words.join(" ")}` };
-  let lines = run.out.split("\n");
-  if (lines.length > MAX_NOTICE_LINES) {
-    const more = lines.length - MAX_NOTICE_LINES;
-    lines = lines.slice(0, MAX_NOTICE_LINES);
-    lines.push(`… ${more} more lines — narrow the path, or ask the model to read the diff`);
+  const words = safeArgs((args || "").trim().split(/\s+/).filter(Boolean));
+  const wantsStat = words.includes("--stat");
+  const rest = words.filter((w) => w !== "--stat");
+  if (wantsStat) {
+    return { show: { title: `diff --stat ${rest.join(" ")}`.trim(), body: stat(rest), format: "text" } };
   }
-  return { notice: `diff ${words.join(" ")}:\n${lines.join("\n")}` };
+  const argv = rest.length ? rest : ["HEAD"];
+  const run = git(["diff", "--no-color", ...argv]);
+  if (!run.ok) return { notice: `diff: ${run.out || "git diff failed"}` };
+  const title = `diff ${rest.join(" ")}`.trim();
+  if (!run.out) {
+    const extra = untracked();
+    const body = extra.length ? `no tracked changes\nuntracked: ${extra.join(", ")}` : "clean working tree";
+    return { show: { title, body, format: "text" } };
+  }
+  // A real diff block: e converts the unified diff to its row grammar and
+  // paints the markers; nothing here is a colour.
+  return { show: { title, body: run.out, format: "diff" } };
 }
 
 function onTool(args) {
@@ -190,11 +213,16 @@ function onTool(args) {
   if (paths.length) argv.push("--", ...paths);
   const run = git(argv);
   if (!run.ok) return { content: run.out || "git diff failed", is_error: true };
-  let content = run.out || "no changes";
+  if (!run.out) return { content: "no changes", summary: "no changes" };
+  let content = run.out;
   if (Buffer.byteLength(content) > MAX_TOOL_BYTES) {
     content = content.slice(0, MAX_TOOL_BYTES) + "\n… truncated; pass paths to narrow the diff";
   }
-  return { content };
+  if (args.stat) return { content, summary: `${run.out.split("\n").length} files` };
+  // The model reads the unified diff; the viewer shows the same diff in
+  // e's row grammar with line numbers and markers — `display` is what
+  // ctrl+o paints, `format` how.
+  return { content, summary: counts(run.out), display: run.out, format: "diff" };
 }
 
 function onTurnEnd() {
