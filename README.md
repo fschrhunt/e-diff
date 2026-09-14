@@ -3,7 +3,7 @@
 See what changed. A package for [e](https://github.com/intuitums/e).
 
 ```sh
-e install npm:e-diff                            # from npm
+e install npm:@fschrhunt1/e-diff                 # from npm
 e install git:github.com/fschrhunt/e-diff@v2    # or straight from git
 ```
 
