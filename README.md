@@ -1,9 +1,9 @@
-# diff
+# e-diff
 
 See what changed. A package for [e](https://github.com/intuitums/e).
 
 ```sh
-e install git:github.com/intuitums/diff@v2
+e install git:github.com/fschrhunt/e-diff@v2
 ```
 
 Then restart e or run `/reload`.
